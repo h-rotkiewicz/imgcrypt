@@ -5,20 +5,32 @@ import (
 	"image/draw"
 	"image/png"
 	"os"
+	"fmt"
 )
 
-// Pixel represents the RGBA values of a single pixel.
-// We use uint8 (byte) so you can perform bit-wise operations.
 type Pixel struct {
 	R, G, B, A uint8
 }
 
-// EditableImage wraps the standard Go image to provide easy pixel manipulation.
+func (p *Pixel) set_LSB(bits [3]int) error {
+	channels := []*uint8{&p.R, &p.G, &p.B}
+	for i,bit := range bits {
+		if bit != 0 && bit != 1 {
+			return fmt.Errorf("Bit value must be 0 or 1")
+		}
+		if bit == 1 {
+			*channels[i] |= 1
+		} else {
+			*channels[i] &^= 1
+		}
+	}
+	return nil
+}
+
 type EditableImage struct {
 	Img *image.RGBA
 }
 
-// ImageEditor defines the interface for modifying pixels.
 type ImageEditor interface {
 	GetPixel(x, y int) Pixel
 	SetPixel(x, y int, p Pixel)
@@ -48,7 +60,6 @@ func load_png(filename string) (*EditableImage, error) {
 }
 
 func (e *EditableImage) GetPixel(x, y int) Pixel {
-	// Pix is an array of []uint8. The stride is the width * 4 bytes.
 	idx := e.Img.PixOffset(x, y)
 	
 	return Pixel{
@@ -90,8 +101,8 @@ func (e *EditableImage) ApplyFilter(modifier func(x, y int, p Pixel) Pixel) {
 	width := e.Width()
 	height := e.Height()
 
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			currentPixel := e.GetPixel(x, y)
 			newPixel := modifier(x, y, currentPixel)
 			e.SetPixel(x, y, newPixel)
