@@ -1,11 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"image"
 	"image/draw"
 	"image/png"
 	"os"
-	"fmt"
 )
 
 type Pixel struct {
@@ -108,4 +108,42 @@ func (e *EditableImage) ApplyFilter(modifier func(x, y int, p Pixel) Pixel) {
 			e.SetPixel(x, y, newPixel)
 		}
 	}
+}
+
+func WriteBitsAtPoints(img *EditableImage, bits []int, points []image.Point) error {
+	if len(points) * 3 < len(bits) {
+		return fmt.Errorf("not enough points to hold all bits")
+	}
+
+	pixelCounter := 0
+
+	for i := 0; i < len(bits); i += 3 {
+		pt := points[pixelCounter]
+		pixelCounter++
+
+		pixel := img.GetPixel(pt.X, pt.Y)
+
+		var chunk [3]int
+		if i < len(bits)   { chunk[0] = bits[i] }
+		if i+1 < len(bits) { chunk[1] = bits[i+1] }
+		if i+2 < len(bits) { chunk[2] = bits[i+2] }
+
+		pixel.set_LSB(chunk) 
+		img.SetPixel(pt.X, pt.Y, pixel)
+	}
+	return nil
+}
+
+func ReadBitsAtPoints(img *EditableImage, points []image.Point) []int {
+	var bits []int
+	
+	for _, pt := range points {
+		pixel := img.GetPixel(pt.X, pt.Y)
+		
+		// Extract 3 bits per pixel
+		bits = append(bits, int(pixel.R&1))
+		bits = append(bits, int(pixel.G&1))
+		bits = append(bits, int(pixel.B&1))
+	}
+	return bits
 }

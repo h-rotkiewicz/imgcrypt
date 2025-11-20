@@ -1,11 +1,11 @@
 package main
 
 import (
-  "fmt"
-  "flag"
-  "os"
-	"math/rand"
+	"flag"
+	"fmt"
+	"os"
 )
+const MasterSeed int64 = 1234567890
 
 func main() {
 	if len(os.Args) < 2 {
@@ -28,149 +28,104 @@ func handleHide(args []string) {
 	cmd := flag.NewFlagSet("hide", flag.ExitOnError)
 	text := cmd.String("t", "", "Text to hide")
 	imgPath := cmd.String("i", "", "Path to input image")
-	password := cmd.String("p", "", "Password")
-
 	cmd.Parse(args)
 
 	if *text == "" || *imgPath == "" {
-		fmt.Println("Error: hide requires -t and -i")
-		cmd.PrintDefaults()
-		os.Exit(1)
-	}
-
-	image, err := load_png(*imgPath)
-	if err != nil {
-		fmt.Println("Error loading image:", err)
+		fmt.Println("Error: -t and -i are required")
 		return
 	}
 
-	textBits := TextToBits(*text)
-	lengthHeader := IntTo32Bits(len(*text)) 
-	allBits := append(lengthHeader, textBits...)
-
-	fmt.Printf("Hiding %d bits...\n", len(allBits))
+	img, _ := load_png(*imgPath)
 	
-	err = write_bits_into_image(image, allBits, *password)
-	if err != nil {
-		fmt.Println("Error writing bits:", err)
-		return
-	}
+	sessionPass := GenerateRandomPassword()
+	fmt.Println("Generated Session Password:", sessionPass)
+	
+	passBits := TextToBits(sessionPass) 
+	textBits := TextToBits(*text)      
+	
+	lengthBits := IntTo32Bits(len(*text)) 
+	headerBits := append(lengthBits, passBits...)
 
-	image.Save("output.png")
-	fmt.Println("Done. Saved to output.png")
+	const SplitPoint = 5000
+	totalPixels := img.Width() * img.Height()
+
+	// A. Header Points (Using MasterSeed)
+	// enough pixels for 288 bits (approx 96 pixels)
+	headerPixelsNeeded := (len(headerBits) + 2) / 3
+	headerPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), MasterSeed, headerPixelsNeeded, 0, SplitPoint)
+
+	// B. Body Points (Using Session Password as Seed)
+	// enough pixels for the text
+	bodyPixelsNeeded := (len(textBits) + 2) / 3
+	sessionSeed := passwordToSeed(sessionPass)
+	
+	bodyPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), sessionSeed, bodyPixelsNeeded, SplitPoint, totalPixels)
+
+
+	fmt.Println("Writing Header...")
+	WriteBitsAtPoints(img, headerBits, headerPoints)
+
+	fmt.Println("Writing Body...")
+	WriteBitsAtPoints(img, textBits, bodyPoints)
+
+	img.Save("output.png")
+	fmt.Println("Done.")
 }
 
 func handleReveal(args []string) {
 	cmd := flag.NewFlagSet("reveal", flag.ExitOnError)
 	imgPath := cmd.String("i", "", "Path to input image")
-	password := cmd.String("p", "", "Password")
 	cmd.Parse(args)
 
 	if *imgPath == "" {
-		fmt.Println("Error: reveal requires -i")
-		cmd.PrintDefaults()
-		os.Exit(1)
-	}
-
-	image, err := load_png(*imgPath)
-	if err != nil {
-		fmt.Println("Error:", err)
+		fmt.Println("Error: -i is required")
 		return
 	}
 
-	extractedBits := read_bits_randomly(image, *password)
+	img, _ := load_png(*imgPath)
+	const SplitPoint = 5000
 
-	lengthBits := extractedBits[:32]
-	messageLength := BitsToInt(lengthBits)
-
-	fmt.Printf("Debug: Header says message is %d bytes long.\n", messageLength)
-
-	maxCapacity := (image.Width() * image.Height() * 3) / 8
 	
-	if messageLength < 0 || messageLength > maxCapacity {
-		fmt.Println("ERROR: Extracted length is invalid.")
-		fmt.Println("Possible causes:")
-		fmt.Println(" - Wrong Password (Seed mismatch)")
-		fmt.Println(" - Input image does not have a message")
+	// Header is ALWAYS 36 bytes (4 bytes len + 32 bytes pass) = 288 bits.
+	headerPixelsToRead := 96 
+	
+	headerPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), MasterSeed, headerPixelsToRead, 0, SplitPoint)
+	headerRawBits := ReadBitsAtPoints(img, headerPoints)
+
+	msgLenBits := headerRawBits[:32]
+	msgLen := BitsToInt(msgLenBits) // Length in BYTES
+	fmt.Printf("Header says message is %d bytes long.\n", msgLen)
+
+	// B. Extract Session Password (Next 256 bits)
+	// 32 bytes * 8 bits = 256 bits
+	passStart := 32
+	passEnd   := 32 + 256
+	passBits  := headerRawBits[passStart:passEnd]
+	sessionPass := BitsToText(passBits)
+	fmt.Println("Recovered Session Password:", sessionPass)
+
+	// --- 3. Read Body ---
+
+	// Now we use the recovered password to generate the body points
+	sessionSeed := passwordToSeed(sessionPass)
+	
+	// Calculate how many pixels we need to read for the message
+	totalMsgBits := msgLen * 8
+	bodyPixelsNeeded := (totalMsgBits + 2) / 3 // integer math ceiling
+	
+	// Generate points in the Body Zone
+	bodyPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), sessionSeed, bodyPixelsNeeded, SplitPoint, img.Width()*img.Height())
+	
+	// Read bits
+	bodyRawBits := ReadBitsAtPoints(img, bodyPoints)
+	
+	// Trim to exact size
+	if len(bodyRawBits) < totalMsgBits {
+		fmt.Println("Error: Image corrupt, not enough bits read")
 		return
 	}
-
-	start := 32
-	end := 32 + (messageLength * 8)
+	finalMsgBits := bodyRawBits[:totalMsgBits]
 	
-	if end > len(extractedBits) {
-		fmt.Println("Error: Message length exceeds read bits.")
-		return
-	}
-
-	messageBits := extractedBits[start:end]
-	message := BitsToText(messageBits)
-	
-	fmt.Println("Hidden message:", message)
-}
-
-
-func write_bits_into_image(img *EditableImage, bits []int, password string) error {
-	width := img.Width()
-	height := img.Height()
-	totalPixels := width * height
-
-	pixelsNeeded := (len(bits) + 2) / 3 
-	if pixelsNeeded > totalPixels {
-		return fmt.Errorf("image too small: need %d pixels, have %d", pixelsNeeded, totalPixels)
-	}
-
-	seed := passwordToSeed(password)
-	r := rand.New(rand.NewSource(seed))
-	
-	shuffledIndices := r.Perm(totalPixels)
-
-	pixelCounter := 0 // Tracks which random pixel we are using
-	
-	for i := 0; i < len(bits); i += 3 {
-		randomIndex := shuffledIndices[pixelCounter]
-		pixelCounter++
-
-		x := randomIndex % width
-		y := randomIndex / width
-
-		pixel := img.GetPixel(x, y)
-
-		var chunk [3]int
-		if i < len(bits)   { chunk[0] = bits[i] }
-		if i+1 < len(bits) { chunk[1] = bits[i+1] }
-		if i+2 < len(bits) { chunk[2] = bits[i+2] }
-
-		err := pixel.set_LSB(chunk)
-		if err != nil {
-			return err
-		}
-		img.SetPixel(x, y, pixel)
-	}
-	return nil
-}
-
-func read_bits_randomly(img *EditableImage, password string) []int {
-	width := img.Width()
-	height := img.Height()
-	totalPixels := width * height
-
-	seed := passwordToSeed(password)
-	r := rand.New(rand.NewSource(seed))
-	shuffledIndices := r.Perm(totalPixels)
-
-	var extractedBits []int
-
-	for _, randomIndex := range shuffledIndices {
-		x := randomIndex % width
-		y := randomIndex / width
-
-		pixel := img.GetPixel(x, y)
-
-		extractedBits = append(extractedBits, int(pixel.R&1))
-		extractedBits = append(extractedBits, int(pixel.G&1))
-		extractedBits = append(extractedBits, int(pixel.B&1))
-	}
-
-	return extractedBits
+	message := BitsToText(finalMsgBits)
+	fmt.Println("Hidden Message:", message)
 }
