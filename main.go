@@ -4,6 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"bytes"
+	"encoding/binary"
+	"crypto/ecdh"
 )
 const MasterSeed int64 = 1234567890
 
@@ -26,47 +29,76 @@ func main() {
 
 func handleHide(args []string) {
 	cmd := flag.NewFlagSet("hide", flag.ExitOnError)
+	key := cmd.String("k", "", "Path to Receiver's Public Key")
 	text := cmd.String("t", "", "Text to hide")
 	imgPath := cmd.String("i", "", "Path to input image")
 	cmd.Parse(args)
+	keyPath := *key
 
-	if *text == "" || *imgPath == "" {
-		fmt.Println("Error: -t and -i are required")
+	if *text == "" || *imgPath == "" || keyPath == "" {
+		fmt.Println("Error: -t, -i, and -k are all required.")
+		cmd.PrintDefaults()
 		return
 	}
 
-	img, _ := load_png(*imgPath)
-	
+	img, err := load_png(*imgPath)
+	if err != nil {
+		fmt.Println("Image Load Error:", err)
+		return
+	}
+
+	keyObj, kType, err := LoadECCKey(keyPath)
+	if err != nil {
+		fmt.Println("Key Error:", err)
+		return
+	}
+	if kType != KeyTypePublic {
+		fmt.Println("Error: To hide, you need the RECEIVER'S PUBLIC KEY.")
+		return
+	}
+	pubKey := keyObj.(*ecdh.PublicKey)
+
 	sessionPass := GenerateRandomPassword()
 	fmt.Println("Generated Session Password:", sessionPass)
-	
-	passBits := TextToBits(sessionPass) 
-	textBits := TextToBits(*text)      
-	
-	lengthBits := IntTo32Bits(len(*text)) 
-	headerBits := append(lengthBits, passBits...)
 
-	const SplitPoint = 5000
-	totalPixels := img.Width() * img.Height()
+	fmt.Println("Encrypting Body with AES...")
+	encryptedBodyBytes, err := EncryptAES(*text, sessionPass)
+	if err != nil {
+		fmt.Println("Body Encryption Failed:", err)
+		return
+	}
 
-	// A. Header Points (Using MasterSeed)
-	// enough pixels for 288 bits (approx 96 pixels)
-	headerPixelsNeeded := (len(headerBits) + 2) / 3
+	payloadBuf := new(bytes.Buffer)
+	
+	binary.Write(payloadBuf, binary.LittleEndian, int32(len(encryptedBodyBytes)))
+	
+	payloadBuf.Write([]byte(sessionPass))
+
+	fmt.Println("Encrypting Header with ECC...")
+	encryptedHeaderBytes, err := EncryptHeader(pubKey, payloadBuf.Bytes())
+	if err != nil {
+		fmt.Println("Header Encryption Failed:", err)
+		return
+	}
+
+	const SplitPoint = 5000 // Reserve first 5000 pixels for header
+
+	encryptedHeaderBits := BytesToBits(encryptedHeaderBytes) // Helper function
+	headerPixelsNeeded := (len(encryptedHeaderBits) + 2) / 3
+	
 	headerPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), MasterSeed, headerPixelsNeeded, 0, SplitPoint)
+	
+	fmt.Printf("Writing %d encrypted header bits...\n", len(encryptedHeaderBits))
+	WriteBitsAtPoints(img, encryptedHeaderBits, headerPoints)
 
-	// B. Body Points (Using Session Password as Seed)
-	// enough pixels for the text
-	bodyPixelsNeeded := (len(textBits) + 2) / 3
+	bodyBits := BytesToBits(encryptedBodyBytes) 
 	sessionSeed := passwordToSeed(sessionPass)
 	
-	bodyPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), sessionSeed, bodyPixelsNeeded, SplitPoint, totalPixels)
+	bodyPixelsNeeded := (len(bodyBits) + 2) / 3
+	bodyPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), sessionSeed, bodyPixelsNeeded, SplitPoint, img.Width()*img.Height())
 
-
-	fmt.Println("Writing Header...")
-	WriteBitsAtPoints(img, headerBits, headerPoints)
-
-	fmt.Println("Writing Body...")
-	WriteBitsAtPoints(img, textBits, bodyPoints)
+	fmt.Printf("Writing %d encrypted body bits...\n", len(bodyBits))
+	WriteBitsAtPoints(img, bodyBits, bodyPoints)
 
 	img.Save("output.png")
 	fmt.Println("Done.")
@@ -74,58 +106,109 @@ func handleHide(args []string) {
 
 func handleReveal(args []string) {
 	cmd := flag.NewFlagSet("reveal", flag.ExitOnError)
+	key := cmd.String("k", "", "Path to Your Private Key")
 	imgPath := cmd.String("i", "", "Path to input image")
 	cmd.Parse(args)
+	keyPath := *key
 
-	if *imgPath == "" {
-		fmt.Println("Error: -i is required")
+	if *imgPath == "" || keyPath == "" {
+		fmt.Println("Error: -i and -k are required.")
 		return
 	}
 
-	img, _ := load_png(*imgPath)
+	img, err := load_png(*imgPath)
+	if err != nil {
+		fmt.Println("Image Load Error:", err)
+		return
+	}
+
+	keyObj, kType, err := LoadECCKey(keyPath)
+	if err != nil {
+		fmt.Println("Key Error:", err)
+		return
+	}
+	if kType != KeyTypePrivate {
+		fmt.Println("Error: To reveal, you need YOUR PRIVATE KEY.")
+		return
+	}
+	privKey := keyObj.(*ecdh.PrivateKey)
+
 	const SplitPoint = 5000
 
-	
-	// Header is ALWAYS 36 bytes (4 bytes len + 32 bytes pass) = 288 bits.
-	headerPixelsToRead := 96 
-	
-	headerPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), MasterSeed, headerPixelsToRead, 0, SplitPoint)
+	// EphemeralKey(65) + AES_GCM_Nonce(12) + AES_GCM_Tag(16) + Payload(36) = 129 bytes
+	const EncryptedHeaderSize = 129 
+	headerBitsToRead := EncryptedHeaderSize * 8
+	headerPixelsNeeded := (headerBitsToRead + 2) / 3
+
+	headerPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), MasterSeed, headerPixelsNeeded, 0, SplitPoint)
 	headerRawBits := ReadBitsAtPoints(img, headerPoints)
-
-	msgLenBits := headerRawBits[:32]
-	msgLen := BitsToInt(msgLenBits) // Length in BYTES
-	fmt.Printf("Header says message is %d bytes long.\n", msgLen)
-
-	// B. Extract Session Password (Next 256 bits)
-	// 32 bytes * 8 bits = 256 bits
-	passStart := 32
-	passEnd   := 32 + 256
-	passBits  := headerRawBits[passStart:passEnd]
-	sessionPass := BitsToText(passBits)
-	fmt.Println("Recovered Session Password:", sessionPass)
-
-	// --- 3. Read Body ---
-
-	// Now we use the recovered password to generate the body points
-	sessionSeed := passwordToSeed(sessionPass)
 	
-	// Calculate how many pixels we need to read for the message
-	totalMsgBits := msgLen * 8
-	bodyPixelsNeeded := (totalMsgBits + 2) / 3 // integer math ceiling
-	
-	// Generate points in the Body Zone
-	bodyPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), sessionSeed, bodyPixelsNeeded, SplitPoint, img.Width()*img.Height())
-	
-	// Read bits
-	bodyRawBits := ReadBitsAtPoints(img, bodyPoints)
-	
-	// Trim to exact size
-	if len(bodyRawBits) < totalMsgBits {
-		fmt.Println("Error: Image corrupt, not enough bits read")
+	encryptedHeaderBytes := BitsToBytes(headerRawBits[:headerBitsToRead])
+
+	fmt.Println("Decrypting header...")
+	decryptedPayload, err := DecryptHeader(privKey, encryptedHeaderBytes)
+	if err != nil {
+		fmt.Println("Decryption Failed (Wrong Key?):", err)
 		return
 	}
-	finalMsgBits := bodyRawBits[:totalMsgBits]
+
+	buf := bytes.NewReader(decryptedPayload)
+	var bodyLength int32
+	binary.Read(buf, binary.LittleEndian, &bodyLength)
 	
-	message := BitsToText(finalMsgBits)
-	fmt.Println("Hidden Message:", message)
+	passBytes := make([]byte, 32)
+	buf.Read(passBytes)
+	sessionPass := string(passBytes)
+
+	fmt.Printf("Header Decrypted! Body Length: %d, Pass: %s\n", bodyLength, sessionPass)
+
+	sessionSeed := passwordToSeed(sessionPass)
+	totalBodyBits := int(bodyLength) * 8
+	bodyPixelsNeeded := (totalBodyBits + 2) / 3
+	
+	bodyPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), sessionSeed, bodyPixelsNeeded, SplitPoint, img.Width()*img.Height())
+	bodyRawBits := ReadBitsAtPoints(img, bodyPoints)
+
+	if len(bodyRawBits) < totalBodyBits {
+		fmt.Println("Error: Image corrupt or not enough pixels read.")
+		return
+	}
+
+	encryptedBodyBytes := BitsToBytes(bodyRawBits[:totalBodyBits])
+
+	fmt.Println("Decrypting Body...")
+	decryptedMessage, err := DecryptAES(encryptedBodyBytes, sessionPass)
+	if err != nil {
+		fmt.Println("Body Decryption Failed:", err)
+		return
+	}
+
+	fmt.Println("HIDDEN MESSAGE:", decryptedMessage)
+}
+
+
+// Converts a byte slice (e.g., encrypted data) into a slice of bits (0s and 1s)
+func BytesToBits(data []byte) []int {
+	var bits []int
+	for _, b := range data {
+		for i := 7; i >= 0; i-- {
+			bits = append(bits, int((b>>i)&1))
+		}
+	}
+	return bits
+}
+
+// Converts a slice of bits back into a byte slice
+func BitsToBytes(bits []int) []byte {
+	var bytes []byte
+	for i := 0; i < len(bits); i += 8 {
+		var b byte
+		for j := 0; j < 8; j++ {
+			if i+j < len(bits) && bits[i+j] == 1 {
+				b |= 1 << (7 - j)
+			}
+		}
+		bytes = append(bytes, b)
+	}
+	return bytes
 }

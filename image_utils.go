@@ -97,19 +97,6 @@ func (e *EditableImage) Save(filename string) error {
 	return png.Encode(file, e.Img)
 }
 
-func (e *EditableImage) ApplyFilter(modifier func(x, y int, p Pixel) Pixel) {
-	width := e.Width()
-	height := e.Height()
-
-	for y := range height {
-		for x := range width {
-			currentPixel := e.GetPixel(x, y)
-			newPixel := modifier(x, y, currentPixel)
-			e.SetPixel(x, y, newPixel)
-		}
-	}
-}
-
 func WriteBitsAtPoints(img *EditableImage, bits []int, points []image.Point) error {
 	if len(points) * 3 < len(bits) {
 		return fmt.Errorf("not enough points to hold all bits")
