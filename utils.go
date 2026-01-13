@@ -16,7 +16,7 @@ func passwordToSeed(password string) int64 {
 
 func GenerateRandomPassword() string {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, 32)
+	b := make([]byte, 16)
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := range b {
 		b[i] = letters[r.Intn(len(letters))]

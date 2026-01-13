@@ -31,14 +31,6 @@ type EditableImage struct {
 	Img *image.RGBA
 }
 
-type ImageEditor interface {
-	GetPixel(x, y int) Pixel
-	SetPixel(x, y int, p Pixel)
-	Width() int
-	Height() int
-	Save(filename string) error
-}
-
 func load_png(filename string) (*EditableImage, error) {
 	file, err := os.Open(filename)
 	if err != nil {
