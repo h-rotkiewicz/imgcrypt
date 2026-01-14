@@ -72,18 +72,12 @@ func EncryptHeader(receiverPub *ecdh.PublicKey, data []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// 3. Hash secret to get key, but TRUNCATE to 16 bytes for your AES-128 impl
-	fullHash := sha256.Sum256(sharedSecret)
-	symmetricKey := fullHash[:16]
 
-	// 4. Encrypt using custom AES (encryptBits)
-	// encryptBits handles padding automatically
-	ciphertext, err := encryptBits(data, symmetricKey)
+	ciphertext, err := EncryptAES(string(data), string(sharedSecret))
 	if err != nil {
 		return nil, err
 	}
 
-	// 5. Append Ephemeral PubKey + Ciphertext
 	return append(ephemeralPriv.PublicKey().Bytes(), ciphertext...), nil
 }
 
@@ -93,28 +87,23 @@ func DecryptHeader(privKey *ecdh.PrivateKey, blob []byte) ([]byte, error) {
 		return nil, errors.New("header blob too short")
 	}
 
-	// 1. Split Blob
 	ephemPubBytes := blob[:pubKeySize]
 	ciphertext := blob[pubKeySize:]
 
 
-	// 2. Parse Ephemeral PubKey
 	ephemPub, err := ecdh.P256().NewPublicKey(ephemPubBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. Derive Shared Secret
 	sharedSecret, err := privKey.ECDH(ephemPub)
 	if err != nil {
 		return nil, err
 	}
 
-	// 4. Derive AES Key (Truncate to 16 bytes)
 	fullHash := sha256.Sum256(sharedSecret)
 	symmetricKey := fullHash[:16]
 
-	// 5. Decrypt using custom AES (decryptBits)
 	return decryptBits(ciphertext, symmetricKey)
 }
 

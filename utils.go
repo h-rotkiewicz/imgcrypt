@@ -49,3 +49,29 @@ func GeneratePointsInRange(width, height int, seed int64, count int, startIdx, e
 	}
 	return points, nil
 }
+
+// Converts a byte slice (e.g., encrypted data) into a slice of bits (0s and 1s)
+func BytesToBits(data []byte) []int {
+	var bits []int
+	for _, b := range data {
+		for i := 7; i >= 0; i-- {
+			bits = append(bits, int((b>>i)&1))
+		}
+	}
+	return bits
+}
+
+// Converts a slice of bits back into a byte slice
+func BitsToBytes(bits []int) []byte {
+	var bytes []byte
+	for i := 0; i < len(bits); i += 8 {
+		var b byte
+		for j := 0; j < 8; j++ {
+			if i+j < len(bits) && bits[i+j] == 1 {
+				b |= 1 << (7 - j)
+			}
+		}
+		bytes = append(bytes, b)
+	}
+	return bytes
+}

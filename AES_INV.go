@@ -157,7 +157,6 @@ func decryptBits(encryptedData []byte, password []byte) ([]byte, error) {
 		decrypted = append(decrypted, decBlock...)
 	}
 
-	// Remove Padding (Replaces the old bytes.TrimRight)
 	unpadded, err := pkcs7Unpad(decrypted)
 	if err != nil {
 		return nil, fmt.Errorf("unpadding failed: %v", err)

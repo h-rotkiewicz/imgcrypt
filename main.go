@@ -31,15 +31,36 @@ func main() {
 func handleHide(args []string) {
 	cmd := flag.NewFlagSet("hide", flag.ExitOnError)
 	key := cmd.String("k", "", "Path to Receiver's Public Key")
-	text := cmd.String("t", "", "Text to hide")
+	textArg := cmd.String("t", "", "Text to hide")           // Raw text option
+	textFile := cmd.String("tf", "", "Path to text file")    // File option
 	imgPath := cmd.String("i", "", "Path to input image")
+
 	cmd.Parse(args)
 	keyPath := *key
 
-	if *text == "" || *imgPath == "" || keyPath == "" {
-		fmt.Println("Error: -t, -i, and -k are all required.")
+	if *imgPath == "" || keyPath == "" {
+		fmt.Println("Error: -i and -k are required.")
 		cmd.PrintDefaults()
 		return
+	}
+	
+	if *textArg == "" && *textFile == "" {
+		fmt.Println("Error: You must provide text via -t OR a file via -tf")
+		cmd.PrintDefaults()
+		return
+	}
+
+	var textData []byte
+	var err error
+
+	if *textFile != "" {
+		textData, err = os.ReadFile(*textFile)
+		if err != nil {
+			fmt.Println("Error reading text file:", err)
+			return
+		}
+	} else {
+		textData = []byte(*textArg)
 	}
 
 	img, err := load_png(*imgPath)
@@ -63,7 +84,7 @@ func handleHide(args []string) {
 	fmt.Println("Generated Session Password:", sessionPass)
 
 	fmt.Println("Encrypting Body with AES...")
-	encryptedBodyBytes, err := EncryptAES(*text, sessionPass)
+	encryptedBodyBytes, err := EncryptAES(string(textData), sessionPass)
 	if err != nil {
 		fmt.Println("Body Encryption Failed:", err)
 		return
@@ -82,10 +103,14 @@ func handleHide(args []string) {
 		return
 	}
 
-	encryptedHeaderBits := BytesToBits(encryptedHeaderBytes) // Helper function
+	encryptedHeaderBits := BytesToBits(encryptedHeaderBytes)
 	headerPixelsNeeded := (len(encryptedHeaderBits) + 2) / 3
 	
-	headerPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), MasterSeed, headerPixelsNeeded, 0, SplitPoint)
+	headerPoints, err := GeneratePointsInRange(img.Width(), img.Height(), MasterSeed, headerPixelsNeeded, 0, SplitPoint)
+	if err != nil {
+		fmt.Println("Header Point Generation Error:", err)
+		return
+	}
 	
 	fmt.Printf("Writing %d encrypted header bits...\n", len(encryptedHeaderBits))
 	WriteBitsAtPoints(img, encryptedHeaderBits, headerPoints)
@@ -94,17 +119,21 @@ func handleHide(args []string) {
 	sessionSeed := passwordToSeed(sessionPass)
 	
 	bodyPixelsNeeded := (len(bodyBits) + 2) / 3
-	bodyPoints, _ := GeneratePointsInRange(img.Width(), img.Height(), sessionSeed, bodyPixelsNeeded, SplitPoint, img.Width()*img.Height())
+	bodyPoints, err := GeneratePointsInRange(img.Width(), img.Height(), sessionSeed, bodyPixelsNeeded, SplitPoint, img.Width()*img.Height())
+	if err != nil {
+		fmt.Println("Body Point Generation Error:", err)
+		return
+	}
+
 
 	fmt.Printf("Writing %d encrypted body bits...\n", len(bodyBits))
 	WriteBitsAtPoints(img, bodyBits, bodyPoints)
 
 	img.Save("output.png")
-// Paint Header Points PINK
 	for _, p := range headerPoints {
-    	px := img.GetPixel(p.X, p.Y) // Assuming you have a getter
+    	px := img.GetPixel(p.X, p.Y)
     	px.R = 255; px.G = 0; px.B = 255
-    	img.SetPixel(p.X, p.Y, px)   // Assuming you have a setter
+    	img.SetPixel(p.X, p.Y, px)
 	}
 
 	for _, p := range bodyPoints {
@@ -132,7 +161,6 @@ func handleReveal(args []string) {
 		fmt.Println("Image Load Error:", err)
 		return
 	}
-
 
 	headerBytesLen := 97
 	headerPixels := ((headerBytesLen * 8) + 2) / 3 
@@ -188,28 +216,3 @@ func handleReveal(args []string) {
 }
 
 
-// Converts a byte slice (e.g., encrypted data) into a slice of bits (0s and 1s)
-func BytesToBits(data []byte) []int {
-	var bits []int
-	for _, b := range data {
-		for i := 7; i >= 0; i-- {
-			bits = append(bits, int((b>>i)&1))
-		}
-	}
-	return bits
-}
-
-// Converts a slice of bits back into a byte slice
-func BitsToBytes(bits []int) []byte {
-	var bytes []byte
-	for i := 0; i < len(bits); i += 8 {
-		var b byte
-		for j := 0; j < 8; j++ {
-			if i+j < len(bits) && bits[i+j] == 1 {
-				b |= 1 << (7 - j)
-			}
-		}
-		bytes = append(bytes, b)
-	}
-	return bytes
-}
