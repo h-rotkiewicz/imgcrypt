@@ -22,7 +22,6 @@ var sbox = [256]byte{
 	0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 }
 
-// Rcon: Round constants for key expansion
 var rcon = [11]byte{
 	0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36,
 }
@@ -35,19 +34,19 @@ func pkcs7Pad(data []byte, blockSize int) []byte {
 
 func aesEncryptBlock(chunk []byte, key []byte) ([]byte, error) {
 	stateMatrix := make([][]byte, 4)
-  for i := range 4 {
-  	stateMatrix[i] = make([]byte, 4)
-  }
-  for i:=range 4 {
-  	for j:=range 4 {
-			stateMatrix[j][i] = chunk[i*4 + j]
+	for i := range 4 {
+		stateMatrix[i] = make([]byte, 4)
+	}
+	for i := range 4 {
+		for j := range 4 {
+			stateMatrix[j][i] = chunk[i*4+j]
 		}
 	}
 	roundKeys := keyExpansion(key)
 	// Initial AddRoundKey
 	addRoundKey(stateMatrix, roundKeys[0])
 	// 9 Main Rounds
-	for round:=1; round<=9; round++ {
+	for round := 1; round <= 9; round++ {
 		subBytes(stateMatrix)
 		shiftRows(stateMatrix)
 		mixColumns(stateMatrix)
@@ -59,26 +58,24 @@ func aesEncryptBlock(chunk []byte, key []byte) ([]byte, error) {
 	addRoundKey(stateMatrix, roundKeys[10])
 	encryptedBlock := make([]byte, 16)
 
-	for i:=range 4 {
-		for j:=range 4 {
-			encryptedBlock[i*4 + j] = stateMatrix[j][i]
+	for i := range 4 {
+		for j := range 4 {
+			encryptedBlock[i*4+j] = stateMatrix[j][i]
 		}
 	}
 
 	return encryptedBlock, nil
 }
 
-
-
 func addRoundKey(state [][]byte, roundKey []byte) {
-    // roundKey is 16 bytes in same column-major order
-    idx := 0
-    for c := range 4 {        // column
-        for r := range 4 {    // row
-            state[r][c] ^= roundKey[idx]
-            idx++
-        }
-    }
+	// roundKey is 16 bytes in same column-major order
+	idx := 0
+	for c := range 4 { // column
+		for r := range 4 { // row
+			state[r][c] ^= roundKey[idx]
+			idx++
+		}
+	}
 }
 
 func subBytes(state [][]byte) {
@@ -102,7 +99,6 @@ func xtime(b byte) byte {
 	return b << 1
 }
 
-// Mix columns using the fixed AES polynomial matrix
 func mixColumns(state [][]byte) {
 	for c := range 4 {
 		s0, s1, s2, s3 := state[0][c], state[1][c], state[2][c], state[3][c]
@@ -121,7 +117,7 @@ func mixColumns(state [][]byte) {
 
 func keyExpansion(key []byte) [][]byte {
 	w := make([]byte, 176)
-	copy(w[:16], key) 
+	copy(w[:16], key)
 
 	for i := 4; i < 44; i++ {
 		temp := make([]byte, 4)
@@ -151,7 +147,7 @@ func keyExpansion(key []byte) [][]byte {
 
 func encryptBits(data []byte, password []byte) ([]byte, error) {
 	const blockSize = 16
-	
+
 	padded := pkcs7Pad(data, blockSize)
 
 	encrypted := make([]byte, 0, len(padded))
